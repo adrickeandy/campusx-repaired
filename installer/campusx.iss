@@ -52,7 +52,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\campusx"; ValueType: string; ValueName: ""; ValueData: "URL:CampusX"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\campusx"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
-Root: HKCU; Subkey: "Software\Classes\campusx\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}""" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\campusx\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
