@@ -11,24 +11,35 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # =========================
+      # CHECKOUT
+      # =========================
+
       - name: Checkout
         uses: actions/checkout@v4
 
       # =========================
-      # FLUTTER
+      # SETUP FLUTTER
       # =========================
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.35.0'
+          channel: stable
           cache: true
+
+      # =========================
+      # VERIFY FLUTTER
+      # =========================
+
+      - name: Flutter Version
+        run: flutter --version
 
       - name: Flutter Doctor
         run: flutter doctor -v
 
       # =========================
-      # DEPENDENCIES
+      # INSTALL DEPENDENCIES
       # =========================
 
       - name: Install dependencies
@@ -55,11 +66,15 @@ jobs:
         run: flutter build windows --release --dart-define-from-file=env.json
 
       # =========================
-      # INNO SETUP
+      # INSTALL INNO SETUP
       # =========================
 
       - name: Install Inno Setup
         run: choco install innosetup -y
+
+      # =========================
+      # BUILD WINDOWS INSTALLER
+      # =========================
 
       - name: Build Windows Installer
         run: |
