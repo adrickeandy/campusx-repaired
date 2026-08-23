@@ -18,6 +18,10 @@ build/
 # Flutter SDK doing the build.
 windows/
 
+# --- Android: same principle — generated fresh by
+# `flutter create --platforms=android --org com.campusx .`
+android/
+
 # --- IDE ---
 .idea/
 .vscode/
