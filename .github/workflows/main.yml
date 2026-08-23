@@ -46,15 +46,46 @@ jobs:
         run: flutter create --platforms=android .
 
       # =========================
-      # VERIFY ANDROID PROJECT
+      # DISABLE KOTLIN INCREMENTAL
       # =========================
 
-      - name: Verify Android project
-        shell: bash
+      - name: Configure Kotlin Build
+        shell: powershell
         run: |
-          echo "Checking Android project..."
-          test -f android/app/build.gradle && echo "android/app/build.gradle FOUND"
-          find android -maxdepth 2 -type f | sort
+          $props = "android\gradle.properties"
+
+          if (!(Test-Path $props)) {
+            New-Item -ItemType File -Path $props -Force | Out-Null
+          }
+
+          $content = Get-Content $props -ErrorAction SilentlyContinue
+
+          if ($content -notmatch "^kotlin\.incremental=") {
+            Add-Content $props "kotlin.incremental=false"
+          }
+
+          if ($content -notmatch "^kotlin\.incremental\.useClasspathSnapshot=") {
+            Add-Content $props "kotlin.incremental.useClasspathSnapshot=false"
+          }
+
+          Write-Host "Kotlin incremental compilation disabled."
+          Write-Host ""
+          Get-Content $props
+
+      # =========================
+      # CLEAN GENERATED BUILD DATA
+      # =========================
+
+      - name: Clean Flutter Build
+        shell: powershell
+        run: |
+          flutter clean
+
+          if (Test-Path "build") {
+            Remove-Item -Recurse -Force "build"
+          }
+
+          Write-Host "Flutter build directory cleaned."
 
       # =========================
       # INSTALL DEPENDENCIES
@@ -69,6 +100,10 @@ jobs:
 
       - name: Build Android APK
         run: flutter build apk --release --dart-define-from-file=env.json
+
+      # =========================
+      # UPLOAD ANDROID APK
+      # =========================
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
