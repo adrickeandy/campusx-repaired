@@ -11,16 +11,16 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # =========================
+      # ============================================================
       # CHECKOUT
-      # =========================
+      # ============================================================
 
       - name: Checkout
         uses: actions/checkout@v4
 
-      # =========================
+      # ============================================================
       # SETUP FLUTTER
-      # =========================
+      # ============================================================
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -28,9 +28,9 @@ jobs:
           channel: stable
           cache: true
 
-      # =========================
+      # ============================================================
       # VERIFY FLUTTER
-      # =========================
+      # ============================================================
 
       - name: Flutter Version
         run: flutter --version
@@ -38,117 +38,339 @@ jobs:
       - name: Flutter Doctor
         run: flutter doctor -v
 
-      # =========================
+      # ============================================================
+      # INSTALL ANDROID API 36
+      # ============================================================
+
+      - name: Install Android SDK 36
+        shell: powershell
+        run: |
+          Write-Host "Installing Android API 36..."
+
+          $sdkManager = Get-ChildItem `
+            -Path "$env:ANDROID_SDK_ROOT\cmdline-tools" `
+            -Filter "sdkmanager.bat" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $sdkManager) {
+            $sdkManager = Get-ChildItem `
+              -Path "$env:ANDROID_HOME\cmdline-tools" `
+              -Filter "sdkmanager.bat" `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          }
+
+          if (-not $sdkManager) {
+            Write-Host "Searching standard Android SDK location..."
+
+            $sdkManager = Get-ChildItem `
+              -Path "C:\Program Files (x86)\Android\android-sdk\cmdline-tools" `
+              -Filter "sdkmanager.bat" `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          }
+
+          if (-not $sdkManager) {
+            Write-Error "Android sdkmanager.bat could not be found."
+            exit 1
+          }
+
+          Write-Host "Using sdkmanager:"
+          Write-Host $sdkManager.FullName
+
+          & $sdkManager.FullName `
+            "platform-tools" `
+            "platforms;android-36" `
+            "build-tools;36.0.0"
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Android SDK installation failed."
+            exit $LASTEXITCODE
+          }
+
+      # ============================================================
       # GENERATE ANDROID PROJECT
-      # =========================
+      # ============================================================
 
       - name: Generate Android project
         run: flutter create --platforms=android .
 
-      # =========================
-      # DISABLE KOTLIN INCREMENTAL
-      # =========================
+      # ============================================================
+      # FORCE ANDROID COMPILE SDK 36
+      #
+      # This fixes:
+      #
+      # Dependency ':flutter_plugin_android_lifecycle' requires
+      # libraries and applications that depend on it to compile
+      # against version 36 or later.
+      #
+      # It also handles Flutter plugins such as file_picker whose
+      # own Android module may otherwise remain on an older SDK.
+      # ============================================================
 
-      - name: Configure Kotlin Build
+      - name: Configure Android Compile SDK 36
         shell: powershell
         run: |
-          $props = "android\gradle.properties"
+          Write-Host "Configuring Android project for compileSdk 36..."
 
-          if (!(Test-Path $props)) {
-            New-Item -ItemType File -Path $props -Force | Out-Null
+          if (-not (Test-Path "android/build.gradle")) {
+            Write-Error "android/build.gradle was not found."
+            exit 1
           }
 
-          $content = Get-Content $props -ErrorAction SilentlyContinue
+          if (Test-Path "android/app/build.gradle") {
+            $appGradle = Get-Content "android/app/build.gradle" -Raw
 
-          if ($content -notmatch "^kotlin\.incremental=") {
-            Add-Content $props "kotlin.incremental=false"
+            # Modern Flutter Groovy template
+            $appGradle = $appGradle -replace `
+              'compileSdk\s*=\s*flutter\.compileSdkVersion', `
+              'compileSdk = 36'
+
+            # Older Flutter Groovy template
+            $appGradle = $appGradle -replace `
+              'compileSdkVersion\s+flutter\.compileSdkVersion', `
+              'compileSdkVersion 36'
+
+            # Explicit older SDK
+            $appGradle = $appGradle -replace `
+              'compileSdk\s*=\s*3[0-5]\b', `
+              'compileSdk = 36'
+
+            $appGradle = $appGradle -replace `
+              'compileSdkVersion\s+3[0-5]\b', `
+              'compileSdkVersion 36'
+
+            Set-Content `
+              -Path "android/app/build.gradle" `
+              -Value $appGradle `
+              -Encoding UTF8
+
+            Write-Host "android/app/build.gradle configured."
           }
 
-          if ($content -notmatch "^kotlin\.incremental\.useClasspathSnapshot=") {
-            Add-Content $props "kotlin.incremental.useClasspathSnapshot=false"
+          # --------------------------------------------------------
+          # Add a root Gradle override.
+          #
+          # Flutter plugins are separate Gradle subprojects.
+          # This forces every Android module, including file_picker,
+          # to use compileSdk 36.
+          # --------------------------------------------------------
+
+          $rootGradlePath = "android/build.gradle"
+          $rootGradle = Get-Content $rootGradlePath -Raw
+
+          $marker = "// CAMPUSX_COMPILE_SDK_36_OVERRIDE"
+
+          if ($rootGradle -notlike "*$marker*") {
+
+            $override = @"
+
+$marker
+
+subprojects {
+    afterEvaluate { project ->
+        def androidExtension = project.extensions.findByName("android")
+
+        if (androidExtension != null) {
+            try {
+                androidExtension.compileSdk = 36
+            } catch (Exception ignored) {
+                try {
+                    androidExtension.compileSdkVersion 36
+                } catch (Exception ignoredAgain) {
+                    // Ignore modules that do not expose compileSdk.
+                }
+            }
+        }
+    }
+}
+
+"@
+
+            $rootGradle = $rootGradle + $override
+
+            Set-Content `
+              -Path $rootGradlePath `
+              -Value $rootGradle `
+              -Encoding UTF8
+
+            Write-Host "Global compileSdk 36 override added."
+          }
+          else {
+            Write-Host "compileSdk 36 override already exists."
           }
 
-          Write-Host "Kotlin incremental compilation disabled."
+      # ============================================================
+      # VERIFY ANDROID PROJECT
+      # ============================================================
+
+      - name: Verify Android project
+        shell: powershell
+        run: |
+          Write-Host "========================================"
+          Write-Host "ANDROID PROJECT VERIFICATION"
+          Write-Host "========================================"
+
+          if (Test-Path "android/app/build.gradle") {
+            Write-Host "android/app/build.gradle FOUND"
+          }
+          else {
+            Write-Error "android/app/build.gradle NOT FOUND"
+            exit 1
+          }
+
+          if (Test-Path "android/build.gradle") {
+            Write-Host "android/build.gradle FOUND"
+          }
+          else {
+            Write-Error "android/build.gradle NOT FOUND"
+            exit 1
+          }
+
           Write-Host ""
-          Get-Content $props
+          Write-Host "Android app compileSdk configuration:"
+          Select-String `
+            -Path "android/app/build.gradle" `
+            -Pattern "compileSdk" `
+            -Context 0,2
 
-      # =========================
-      # CLEAN GENERATED BUILD DATA
-      # =========================
+          Write-Host ""
+          Write-Host "Root Gradle compileSdk override:"
+          Select-String `
+            -Path "android/build.gradle" `
+            -Pattern "CAMPUSX_COMPILE_SDK_36_OVERRIDE|compileSdk" `
+            -Context 0,2
 
-      - name: Clean Flutter Build
-        shell: powershell
-        run: |
-          flutter clean
+          Write-Host ""
+          Write-Host "Android project files:"
+          Get-ChildItem "android" -Recurse -File |
+            Select-Object -ExpandProperty FullName |
+            Sort-Object
 
-          if (Test-Path "build") {
-            Remove-Item -Recurse -Force "build"
-          }
-
-          Write-Host "Flutter build directory cleaned."
-
-      # =========================
+      # ============================================================
       # INSTALL DEPENDENCIES
-      # =========================
+      # ============================================================
 
       - name: Install dependencies
         run: flutter pub get
 
-      # =========================
+      # ============================================================
+      # VERIFY DART DEFINES FILE
+      # ============================================================
+
+      - name: Verify env.json
+        shell: powershell
+        run: |
+          if (-not (Test-Path "env.json")) {
+            Write-Error "env.json was not found in the repository root."
+            exit 1
+          }
+
+          Write-Host "env.json FOUND"
+
+      # ============================================================
+      # CLEAN PREVIOUS BUILDS
+      # ============================================================
+
+      - name: Flutter Clean
+        run: flutter clean
+
+      # ============================================================
+      # REINSTALL DEPENDENCIES AFTER CLEAN
+      # ============================================================
+
+      - name: Flutter Pub Get
+        run: flutter pub get
+
+      # ============================================================
       # ANDROID APK
-      # =========================
+      # ============================================================
 
       - name: Build Android APK
         run: flutter build apk --release --dart-define-from-file=env.json
 
-      # =========================
+      # ============================================================
       # UPLOAD ANDROID APK
-      # =========================
+      # ============================================================
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: CampusX-Android-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
 
-      # =========================
+      # ============================================================
       # WINDOWS BUILD
-      # =========================
+      # ============================================================
 
       - name: Build Windows
         run: flutter build windows --release --dart-define-from-file=env.json
 
-      # =========================
+      # ============================================================
       # INSTALL INNO SETUP
-      # =========================
+      # ============================================================
 
       - name: Install Inno Setup
         run: choco install innosetup -y
 
-      # =========================
+      # ============================================================
+      # VERIFY INSTALLER SCRIPT
+      # ============================================================
+
+      - name: Verify Inno Setup Script
+        shell: powershell
+        run: |
+          if (-not (Test-Path "installer\campusx.iss")) {
+            Write-Error "installer\campusx.iss was not found."
+            exit 1
+          }
+
+          Write-Host "installer\campusx.iss FOUND"
+
+      # ============================================================
       # BUILD WINDOWS INSTALLER
-      # =========================
+      # ============================================================
 
       - name: Build Windows Installer
+        shell: powershell
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\campusx.iss"
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
-      # =========================
+          if (-not (Test-Path $iscc)) {
+            Write-Error "Inno Setup compiler was not found."
+            exit 1
+          }
+
+          & $iscc "installer\campusx.iss"
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Windows installer build failed."
+            exit $LASTEXITCODE
+          }
+
+      # ============================================================
       # UPLOAD WINDOWS INSTALLER
-      # =========================
+      # ============================================================
 
       - name: Upload Windows Installer
         uses: actions/upload-artifact@v4
         with:
           name: CampusX-Windows-Installer
           path: installer/Output/*.exe
+          if-no-files-found: error
 
-      # =========================
-      # UPLOAD WINDOWS PORTABLE
-      # =========================
+      # ============================================================
+      # UPLOAD WINDOWS PORTABLE BUILD
+      # ============================================================
 
       - name: Upload Windows Build
         uses: actions/upload-artifact@v4
         with:
           name: CampusX-Windows
           path: build/windows/x64/runner/Release/
+          if-no-files-found: error
