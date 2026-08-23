@@ -1,337 +1,156 @@
-name: CampusX Build
+name: Build CampusX (Windows + Android)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
+  # ===========================================================================
+  # One job builds both targets on windows-latest since the Windows desktop
+  # build requires it; Android builds happen fine on the same runner.
+  #
+  # Secrets used (Settings -> Secrets and variables -> Actions):
+  #   SUPABASE_URL, SUPABASE_ANON_KEY, GEMINI_API_KEY, GEMINI_API_KEYS
+  # ===========================================================================
   build:
+    name: Build Windows + Android
     runs-on: windows-latest
 
     steps:
-      # =========================
-      # CHECKOUT
-      # =========================
-
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # =========================
-      # SETUP FLUTTER
-      # =========================
-
-      - name: Setup Flutter
+      - name: Set up Flutter SDK
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: 'stable'
           cache: true
 
-      # =========================
-      # VERIFY FLUTTER
-      # =========================
-
-      - name: Flutter Version
-        run: flutter --version
-
-      - name: Flutter Doctor
+      - name: Flutter doctor
         run: flutter doctor -v
 
-      # =========================
-      # VERIFY PROJECT
-      # =========================
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
 
-      - name: Verify Flutter Project
-        shell: powershell
+      - name: Write build-time env file
+        shell: pwsh
         run: |
-          Write-Host "Current directory:"
-          Get-Location
+          $envJson = @{
+            SUPABASE_URL      = "${{ secrets.SUPABASE_URL }}"
+            SUPABASE_ANON_KEY = "${{ secrets.SUPABASE_ANON_KEY }}"
+            GEMINI_API_KEY    = "${{ secrets.GEMINI_API_KEY }}"
+            GEMINI_API_KEYS   = "${{ secrets.GEMINI_API_KEYS }}"
+            GEMINI_MODEL      = "gemini-3.5-flash-lite"
+          } | ConvertTo-Json
+          Set-Content -Path "env.json" -Value $envJson
 
-          Write-Host ""
-          Write-Host "Project files:"
-          Get-ChildItem -Force
-
-          if (!(Test-Path "pubspec.yaml")) {
-            Write-Error "pubspec.yaml was not found. This is not a Flutter project root."
+      - name: Validate required secrets
+        shell: pwsh
+        run: |
+          # GitHub silently resolves an unknown/mistyped secret name to an
+          # empty string rather than erroring — which then gets baked into
+          # the app as a real (but blank) override of the safe local
+          # default, producing a confusing runtime "No API key found"
+          # error instead of a clear build failure. Fail loudly here instead.
+          $missing = @()
+          if ("${{ secrets.SUPABASE_URL }}" -eq "") { $missing += "SUPABASE_URL" }
+          if ("${{ secrets.SUPABASE_ANON_KEY }}" -eq "") { $missing += "SUPABASE_ANON_KEY" }
+          if ($missing.Count -gt 0) {
+            Write-Error "Missing/empty required secret(s): $($missing -join ', '). Check Settings -> Secrets and variables -> Actions -> exact spelling (case-sensitive)."
             exit 1
           }
+          Write-Host "Required secrets present."
 
-          Write-Host ""
-          Write-Host "Flutter project verified."
-
-      # =========================
-      # GENERATE / REPAIR ANDROID
-      # =========================
-
-      - name: Generate Android project
-        shell: powershell
+      # ---------------------------------------------------------------------
+      # Windows platform scaffold: always regenerated from the actual Flutter
+      # SDK running the build (see README for why this must never be hand-
+      # authored or committed) — then branded.
+      # ---------------------------------------------------------------------
+      - name: Regenerate native Windows platform scaffold
+        shell: pwsh
         run: |
-          Write-Host "Generating Android project..."
+          if (Test-Path windows) { Remove-Item -Recurse -Force windows }
+          flutter create --platforms=windows .
 
-          flutter create --platforms=android .
-
-          if (!(Test-Path "android")) {
-            Write-Error "Android project was not generated."
-            exit 1
-          }
-
-          if (Test-Path "android\app\build.gradle") {
-            Write-Host "Found android/app/build.gradle"
-          }
-          elseif (Test-Path "android\app\build.gradle.kts") {
-            Write-Host "Found android/app/build.gradle.kts"
-          }
-          else {
-            Write-Host ""
-            Write-Host "Contents of android/app:"
-            if (Test-Path "android\app") {
-              Get-ChildItem "android\app" -Force
-            }
-
-            Write-Error "No Android app Gradle build file was found."
-            exit 1
-          }
-
-      # =========================
-      # CONFIGURE ANDROID SDK
-      # =========================
-
-      - name: Configure Android compile SDK
-        shell: powershell
+      - name: Apply CampusX branding (Windows)
+        shell: pwsh
         run: |
-          $buildGradle = $null
+          Copy-Item -Path "branding\app_icon.ico" -Destination "windows\runner\resources\app_icon.ico" -Force
+          (Get-Content windows\CMakeLists.txt) -replace 'set\(BINARY_NAME ".*"\)', 'set(BINARY_NAME "CampusX")' | Set-Content windows\CMakeLists.txt
+          (Get-Content windows\runner\main.cpp) -replace 'CreateAndShow\(L".*?",', 'CreateAndShow(L"CampusX",' | Set-Content windows\runner\main.cpp
+          (Get-Content windows\runner\Runner.rc) -replace '"CompanyName", ".*?"', '"CompanyName", "Plateau High Zone"' -replace '"FileDescription", ".*?"', '"FileDescription", "CampusX Desktop"' -replace '"ProductName", ".*?"', '"ProductName", "CampusX"' | Set-Content windows\runner\Runner.rc
 
-          if (Test-Path "android\app\build.gradle") {
-            $buildGradle = "android\app\build.gradle"
-          }
-          elseif (Test-Path "android\app\build.gradle.kts") {
-            $buildGradle = "android\app\build.gradle.kts"
-          }
-
-          if ($null -eq $buildGradle) {
-            Write-Host ""
-            Write-Host "android/app contents:"
-            Get-ChildItem "android\app" -Force
-
-            Write-Error "Neither android/app/build.gradle nor android/app/build.gradle.kts was found."
-            exit 1
-          }
-
-          Write-Host "Using Gradle file:"
-          Write-Host $buildGradle
-
-          $content = Get-Content $buildGradle -Raw
-
-          # Flutter Kotlin DSL
-          $content = $content -replace `
-            'compileSdk\s*=\s*flutter\.compileSdkVersion', `
-            'compileSdk = 36'
-
-          # Flutter Groovy DSL
-          $content = $content -replace `
-            'compileSdkVersion\s+flutter\.compileSdkVersion', `
-            'compileSdkVersion 36'
-
-          # Existing Kotlin DSL numeric compileSdk
-          $content = $content -replace `
-            'compileSdk\s*=\s*\d+', `
-            'compileSdk = 36'
-
-          # Existing Groovy numeric compileSdkVersion
-          $content = $content -replace `
-            'compileSdkVersion\s+\d+', `
-            'compileSdkVersion 36'
-
-          Set-Content $buildGradle $content -Encoding UTF8
-
-          Write-Host ""
-          Write-Host "Android compileSdk configured to 36."
-          Write-Host ""
-          Write-Host "Final Gradle configuration:"
-          Get-Content $buildGradle
-
-      # =========================
-      # CONFIGURE KOTLIN
-      # =========================
-
-      - name: Configure Kotlin Build
-        shell: powershell
+      # ---------------------------------------------------------------------
+      # Android platform scaffold: same principle — regenerated fresh every
+      # run rather than hand-maintained or committed, so it always matches
+      # whatever Flutter/Gradle/AGP versions this runner actually has.
+      # ---------------------------------------------------------------------
+      - name: Regenerate native Android platform scaffold
+        shell: pwsh
         run: |
-          $props = "android\gradle.properties"
+          if (Test-Path android) { Remove-Item -Recurse -Force android }
+          flutter create --platforms=android --org com.campusx .
 
-          if (!(Test-Path $props)) {
-            New-Item -ItemType File -Path $props -Force | Out-Null
-          }
-
-          $content = Get-Content $props -Raw -ErrorAction SilentlyContinue
-
-          if ($content -notmatch '(?m)^kotlin\.incremental=') {
-            Add-Content $props "kotlin.incremental=false"
-          }
-
-          if ($content -notmatch '(?m)^kotlin\.incremental\.useClasspathSnapshot=') {
-            Add-Content $props "kotlin.incremental.useClasspathSnapshot=false"
-          }
-
-          Write-Host "Kotlin incremental compilation disabled."
-          Write-Host ""
-          Get-Content $props
-
-      # =========================
-      # CONFIGURE GRADLE MEMORY
-      # =========================
-
-      - name: Configure Gradle
-        shell: powershell
+      - name: Apply CampusX branding (Android)
+        shell: pwsh
         run: |
-          $props = "android\gradle.properties"
-
-          $content = Get-Content $props -Raw -ErrorAction SilentlyContinue
-
-          if ($content -notmatch '(?m)^org\.gradle\.jvmargs=') {
-            Add-Content $props "org.gradle.jvmargs=-Xmx4G -Dfile.encoding=UTF-8"
+          $manifest = "android\app\src\main\AndroidManifest.xml"
+          if (Test-Path $manifest) {
+            (Get-Content $manifest) -replace 'android:label="[^"]*"', 'android:label="CampusX"' | Set-Content $manifest
           }
-
-          Write-Host "Gradle configuration:"
-          Write-Host ""
-          Get-Content $props
-
-      # =========================
-      # VERIFY ANDROID PROJECT
-      # =========================
-
-      - name: Verify Android Configuration
-        shell: powershell
-        run: |
-          Write-Host "Android directory:"
-          Get-ChildItem "android" -Force
-
-          Write-Host ""
-          Write-Host "Android app directory:"
-          Get-ChildItem "android\app" -Force
-
-          Write-Host ""
-          Write-Host "Gradle files:"
-          Get-ChildItem "android" -Recurse -File |
-            Where-Object {
-              $_.Name -eq "build.gradle" -or
-              $_.Name -eq "build.gradle.kts" -or
-              $_.Name -eq "gradle.properties"
-            } |
-            Select-Object FullName
-
-      # =========================
-      # CLEAN BUILD DATA
-      # =========================
-
-      - name: Clean Flutter Build
-        shell: powershell
-        run: |
-          flutter clean
-
-          if (Test-Path "build") {
-            Remove-Item -Recurse -Force "build"
-          }
-
-          Write-Host "Flutter build directory cleaned."
-
-      # =========================
-      # INSTALL DEPENDENCIES
-      # =========================
 
       - name: Install dependencies
         run: flutter pub get
 
-      # =========================
-      # VERIFY ENV FILE
-      # =========================
-
-      - name: Verify Environment File
-        shell: powershell
-        run: |
-          if (!(Test-Path "env.json")) {
-            Write-Error "env.json was not found in the project root."
-            exit 1
-          }
-
-          Write-Host "env.json found."
-
-      # =========================
-      # ANDROID APK
-      # =========================
-
-      - name: Build Android APK
+      # ---------------------------------------------------------------------
+      # Android build
+      # ---------------------------------------------------------------------
+      - name: Build Android APK (Release)
         run: flutter build apk --release --dart-define-from-file=env.json
-
-      # =========================
-      # UPLOAD ANDROID APK
-      # =========================
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: CampusX-Android-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
 
-      # =========================
-      # WINDOWS BUILD
-      # =========================
-
-      - name: Build Windows
+      # ---------------------------------------------------------------------
+      # Windows build
+      # ---------------------------------------------------------------------
+      - name: Build Windows Desktop (Release)
         run: flutter build windows --release --dart-define-from-file=env.json
 
-      # =========================
-      # INSTALL INNO SETUP
-      # =========================
+      - name: Zip raw Windows build
+        shell: pwsh
+        run: |
+          $releaseDir = "build/windows/x64/runner/Release"
+          if (-not (Test-Path $releaseDir)) {
+            $releaseDir = "build/windows/runner/Release"
+          }
+          Compress-Archive -Path "$releaseDir/*" -DestinationPath "campusx-windows-x64.zip"
+
+      - name: Upload raw Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: campusx-windows-x64-raw
+          path: campusx-windows-x64.zip
+          if-no-files-found: error
 
       - name: Install Inno Setup
-        run: choco install innosetup -y
+        run: choco install innosetup -y --no-progress
 
-      # =========================
-      # BUILD WINDOWS INSTALLER
-      # =========================
-
-      - name: Build Windows Installer
-        shell: powershell
+      - name: Build Windows installer (CampusXSetup.exe)
+        shell: pwsh
         run: |
-          $iss = "installer\campusx.iss"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\campusx.iss"
 
-          if (!(Test-Path $iss)) {
-            Write-Error "Installer script was not found: $iss"
-            exit 1
-          }
-
-          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-
-          if (!(Test-Path $iscc)) {
-            Write-Error "Inno Setup compiler was not found: $iscc"
-            exit 1
-          }
-
-          & $iscc $iss
-
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Inno Setup failed with exit code $LASTEXITCODE."
-            exit $LASTEXITCODE
-          }
-
-      # =========================
-      # UPLOAD WINDOWS INSTALLER
-      # =========================
-
-      - name: Upload Windows Installer
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: CampusX-Windows-Installer
-          path: installer/Output/*.exe
-
-      # =========================
-      # UPLOAD WINDOWS PORTABLE
-      # =========================
-
-      - name: Upload Windows Build
-        uses: actions/upload-artifact@v4
-        with:
-          name: CampusX-Windows
-          path: build/windows/x64/runner/Release/
+          name: CampusXSetup
+          path: installer/Output/CampusXSetup.exe
+          if-no-files-found: error
