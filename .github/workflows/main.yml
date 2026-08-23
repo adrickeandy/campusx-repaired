@@ -38,12 +38,42 @@ jobs:
       - name: Flutter Doctor
         run: flutter doctor -v
 
-      # =========================
+            # =========================
       # GENERATE ANDROID PROJECT
       # =========================
 
       - name: Generate Android project
         run: flutter create --platforms=android .
+
+      # =========================
+      # CONFIGURE ANDROID SDK
+      # =========================
+
+      - name: Configure Android compile SDK
+        shell: powershell
+        run: |
+          $buildGradle = "android\app\build.gradle"
+
+          if (!(Test-Path $buildGradle)) {
+            Write-Error "android/app/build.gradle was not found."
+            exit 1
+          }
+
+          $content = Get-Content $buildGradle -Raw
+
+          $content = $content -replace `
+            'compileSdk\s*=\s*flutter\.compileSdkVersion', `
+            'compileSdk = 36'
+
+          $content = $content -replace `
+            'compileSdkVersion\s+flutter\.compileSdkVersion', `
+            'compileSdkVersion 36'
+
+          Set-Content $buildGradle $content
+
+          Write-Host "Updated compileSdk to 36."
+          Write-Host ""
+          Get-Content $buildGradle
 
       # =========================
       # DISABLE KOTLIN INCREMENTAL
