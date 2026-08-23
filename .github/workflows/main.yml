@@ -38,12 +38,60 @@ jobs:
       - name: Flutter Doctor
         run: flutter doctor -v
 
-            # =========================
-      # GENERATE ANDROID PROJECT
+      # =========================
+      # VERIFY PROJECT
+      # =========================
+
+      - name: Verify Flutter Project
+        shell: powershell
+        run: |
+          Write-Host "Current directory:"
+          Get-Location
+
+          Write-Host ""
+          Write-Host "Project files:"
+          Get-ChildItem -Force
+
+          if (!(Test-Path "pubspec.yaml")) {
+            Write-Error "pubspec.yaml was not found. This is not a Flutter project root."
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Flutter project verified."
+
+      # =========================
+      # GENERATE / REPAIR ANDROID
       # =========================
 
       - name: Generate Android project
-        run: flutter create --platforms=android .
+        shell: powershell
+        run: |
+          Write-Host "Generating Android project..."
+
+          flutter create --platforms=android .
+
+          if (!(Test-Path "android")) {
+            Write-Error "Android project was not generated."
+            exit 1
+          }
+
+          if (Test-Path "android\app\build.gradle") {
+            Write-Host "Found android/app/build.gradle"
+          }
+          elseif (Test-Path "android\app\build.gradle.kts") {
+            Write-Host "Found android/app/build.gradle.kts"
+          }
+          else {
+            Write-Host ""
+            Write-Host "Contents of android/app:"
+            if (Test-Path "android\app") {
+              Get-ChildItem "android\app" -Force
+            }
+
+            Write-Error "No Android app Gradle build file was found."
+            exit 1
+          }
 
       # =========================
       # CONFIGURE ANDROID SDK
@@ -52,31 +100,59 @@ jobs:
       - name: Configure Android compile SDK
         shell: powershell
         run: |
-          $buildGradle = "android\app\build.gradle"
+          $buildGradle = $null
 
-          if (!(Test-Path $buildGradle)) {
-            Write-Error "android/app/build.gradle was not found."
+          if (Test-Path "android\app\build.gradle") {
+            $buildGradle = "android\app\build.gradle"
+          }
+          elseif (Test-Path "android\app\build.gradle.kts") {
+            $buildGradle = "android\app\build.gradle.kts"
+          }
+
+          if ($null -eq $buildGradle) {
+            Write-Host ""
+            Write-Host "android/app contents:"
+            Get-ChildItem "android\app" -Force
+
+            Write-Error "Neither android/app/build.gradle nor android/app/build.gradle.kts was found."
             exit 1
           }
 
+          Write-Host "Using Gradle file:"
+          Write-Host $buildGradle
+
           $content = Get-Content $buildGradle -Raw
 
+          # Flutter Kotlin DSL
           $content = $content -replace `
             'compileSdk\s*=\s*flutter\.compileSdkVersion', `
             'compileSdk = 36'
 
+          # Flutter Groovy DSL
           $content = $content -replace `
             'compileSdkVersion\s+flutter\.compileSdkVersion', `
             'compileSdkVersion 36'
 
-          Set-Content $buildGradle $content
+          # Existing Kotlin DSL numeric compileSdk
+          $content = $content -replace `
+            'compileSdk\s*=\s*\d+', `
+            'compileSdk = 36'
 
-          Write-Host "Updated compileSdk to 36."
+          # Existing Groovy numeric compileSdkVersion
+          $content = $content -replace `
+            'compileSdkVersion\s+\d+', `
+            'compileSdkVersion 36'
+
+          Set-Content $buildGradle $content -Encoding UTF8
+
           Write-Host ""
+          Write-Host "Android compileSdk configured to 36."
+          Write-Host ""
+          Write-Host "Final Gradle configuration:"
           Get-Content $buildGradle
 
       # =========================
-      # DISABLE KOTLIN INCREMENTAL
+      # CONFIGURE KOTLIN
       # =========================
 
       - name: Configure Kotlin Build
@@ -88,13 +164,13 @@ jobs:
             New-Item -ItemType File -Path $props -Force | Out-Null
           }
 
-          $content = Get-Content $props -ErrorAction SilentlyContinue
+          $content = Get-Content $props -Raw -ErrorAction SilentlyContinue
 
-          if ($content -notmatch "^kotlin\.incremental=") {
+          if ($content -notmatch '(?m)^kotlin\.incremental=') {
             Add-Content $props "kotlin.incremental=false"
           }
 
-          if ($content -notmatch "^kotlin\.incremental\.useClasspathSnapshot=") {
+          if ($content -notmatch '(?m)^kotlin\.incremental\.useClasspathSnapshot=') {
             Add-Content $props "kotlin.incremental.useClasspathSnapshot=false"
           }
 
@@ -103,7 +179,50 @@ jobs:
           Get-Content $props
 
       # =========================
-      # CLEAN GENERATED BUILD DATA
+      # CONFIGURE GRADLE MEMORY
+      # =========================
+
+      - name: Configure Gradle
+        shell: powershell
+        run: |
+          $props = "android\gradle.properties"
+
+          $content = Get-Content $props -Raw -ErrorAction SilentlyContinue
+
+          if ($content -notmatch '(?m)^org\.gradle\.jvmargs=') {
+            Add-Content $props "org.gradle.jvmargs=-Xmx4G -Dfile.encoding=UTF-8"
+          }
+
+          Write-Host "Gradle configuration:"
+          Write-Host ""
+          Get-Content $props
+
+      # =========================
+      # VERIFY ANDROID PROJECT
+      # =========================
+
+      - name: Verify Android Configuration
+        shell: powershell
+        run: |
+          Write-Host "Android directory:"
+          Get-ChildItem "android" -Force
+
+          Write-Host ""
+          Write-Host "Android app directory:"
+          Get-ChildItem "android\app" -Force
+
+          Write-Host ""
+          Write-Host "Gradle files:"
+          Get-ChildItem "android" -Recurse -File |
+            Where-Object {
+              $_.Name -eq "build.gradle" -or
+              $_.Name -eq "build.gradle.kts" -or
+              $_.Name -eq "gradle.properties"
+            } |
+            Select-Object FullName
+
+      # =========================
+      # CLEAN BUILD DATA
       # =========================
 
       - name: Clean Flutter Build
@@ -123,6 +242,20 @@ jobs:
 
       - name: Install dependencies
         run: flutter pub get
+
+      # =========================
+      # VERIFY ENV FILE
+      # =========================
+
+      - name: Verify Environment File
+        shell: powershell
+        run: |
+          if (!(Test-Path "env.json")) {
+            Write-Error "env.json was not found in the project root."
+            exit 1
+          }
+
+          Write-Host "env.json found."
 
       # =========================
       # ANDROID APK
@@ -160,8 +293,28 @@ jobs:
       # =========================
 
       - name: Build Windows Installer
+        shell: powershell
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\campusx.iss"
+          $iss = "installer\campusx.iss"
+
+          if (!(Test-Path $iss)) {
+            Write-Error "Installer script was not found: $iss"
+            exit 1
+          }
+
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+
+          if (!(Test-Path $iscc)) {
+            Write-Error "Inno Setup compiler was not found: $iscc"
+            exit 1
+          }
+
+          & $iscc $iss
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Inno Setup failed with exit code $LASTEXITCODE."
+            exit $LASTEXITCODE
+          }
 
       # =========================
       # UPLOAD WINDOWS INSTALLER
