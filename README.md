@@ -63,14 +63,14 @@ notepad env.json
 ```json
 {
   "SUPABASE_URL": "https://your-project.supabase.co",
-  "SUPABASE_PUBLISHABLE_KEY": "your_supabase_publishable_key",
+  "SUPABASE_ANON_KEY": "your_supabase_publishable_key",
   "GEMINI_API_KEY": "your_gemini_api_key",
   "GEMINI_API_KEYS": "",
   "GEMINI_MODEL": "gemini-3.5-flash-lite"
 }
 ```
 
-- `SUPABASE_PUBLISHABLE_KEY` is Supabase's public/publishable client key — safe to
+- `SUPABASE_ANON_KEY` is Supabase's public/publishable client key — safe to
   ship (it's gated by Row Level Security server-side), but still injected
   rather than hardcoded so you can swap projects without touching code.
 - `GEMINI_API_KEY` is **not** safe to leave in a public repo or an
@@ -110,6 +110,17 @@ pick up scaffold changes from a newer Flutter release. CI does this
 automatically on every run (see `.github/workflows/main.yml`), so you never
 need to commit the `windows/` folder to git — it's in `.gitignore`.
 
+## 3c. Generate the native Android scaffold (optional, first time only)
+
+Same principle as Windows above — `android/` is generated, not committed:
+
+```powershell
+flutter create --platforms=android --org com.campusx .
+```
+
+CI regenerates this fresh every run too and produces a release APK
+(`CampusX-Android-APK` artifact) alongside the Windows build.
+
 ## 4. Run in development
 
 ```powershell
@@ -131,28 +142,6 @@ build\windows\x64\runner\Release\CampusX.exe
 That folder (`Release\`) is a fully self-contained, redistributable app —
 you can zip it and hand it to someone, and it'll run on any Windows 10/11 x64
 machine without them installing Flutter.
-
-
-## 5a. Email signup without confirmation
-
-CampusX is configured to log users in immediately after email/password signup. In the Supabase Dashboard, open **Authentication -> Providers -> Email** and turn **Confirm email** off. Supabase documents that disabling Confirm email returns a session immediately and implicitly confirms the email. citeturn5search2
-
-The app does not use a service-role key to auto-confirm users; that key must never be shipped in a desktop app.
-
-## 5b. Google signup
-
-The registration screen now includes **Sign up using Google**. It uses Supabase OAuth, so a new Google account is created in `auth.users` and the existing `on_auth_user_created` trigger creates its CampusX `profiles` row using the Google email/name metadata.
-
-Before testing it, in Supabase:
-
-1. Enable **Authentication -> Providers -> Google**.
-2. Configure the Google OAuth client ID/secret as required by Supabase.
-3. Add this redirect URL to **Authentication -> URL Configuration -> Redirect URLs**:
-   `campusx://auth-callback`
-
-Supabase supports Google OAuth for Windows/desktop Flutter apps and `signInWithOAuth` accepts a custom redirect URL. citeturn2search15turn2search14
-
-The installer registers the `campusx://` Windows protocol automatically so Google can return to the CampusX app.
 
 ## 6. Build a proper installer (recommended for release)
 
@@ -178,7 +167,7 @@ keys. Set these once under Settings -> Secrets and variables -> Actions:
 | Secret | Required |
 |---|---|
 | `SUPABASE_URL` | yes |
-| `SUPABASE_PUBLISHABLE_KEY` | yes |
+| `SUPABASE_ANON_KEY` | yes |
 | `GEMINI_API_KEY` | yes (for Pegasus to work) |
 | `GEMINI_API_KEYS` | optional (comma-separated failover keys) |
 
@@ -248,6 +237,6 @@ paste the file's contents → Run.
 - **Pegasus replies with "key is not configured"** — you built without
   `--dart-define-from-file=env.json` (or `env.json` is missing `GEMINI_API_KEY`).
 - **App builds but Supabase calls fail** — double-check `SUPABASE_URL` /
-  `SUPABASE_PUBLISHABLE_KEY` in `env.json` match your Supabase project's API
+  `SUPABASE_ANON_KEY` in `env.json` match your Supabase project's API
   settings, and that Row Level Security policies allow the operations you're
   using.
