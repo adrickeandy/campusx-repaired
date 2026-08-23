@@ -39,6 +39,24 @@ jobs:
         run: flutter doctor -v
 
       # =========================
+      # GENERATE ANDROID PROJECT
+      # =========================
+
+      - name: Generate Android project
+        run: flutter create --platforms=android .
+
+      # =========================
+      # VERIFY ANDROID PROJECT
+      # =========================
+
+      - name: Verify Android project
+        shell: bash
+        run: |
+          echo "Checking Android project..."
+          test -f android/app/build.gradle && echo "android/app/build.gradle FOUND"
+          find android -maxdepth 2 -type f | sort
+
+      # =========================
       # INSTALL DEPENDENCIES
       # =========================
 
