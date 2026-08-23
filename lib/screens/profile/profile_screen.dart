@@ -49,33 +49,51 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  String? _loadError;
+  String? _loadErrorDetail;
+
   Future<void> _loadProfileData() async {
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _loadError = null;
+      _loadErrorDetail = null;
+    });
 
-    final currentUser = context.read<AuthProvider>().user;
-    final profile = await _profileService.fetchProfileByUsername(widget.username);
+    try {
+      final currentUser = context.read<AuthProvider>().user;
+      final profile = await _profileService.fetchProfileByUsername(widget.username);
 
-    if (profile != null) {
-      final posts = await _postService.fetchUserPosts(profile.id, currentUserId: currentUser?.id);
-      final counts = await _profileService.fetchFollowCounts(profile.id);
+      if (profile != null) {
+        final posts = await _postService.fetchUserPosts(profile.id, currentUserId: currentUser?.id);
+        final counts = await _profileService.fetchFollowCounts(profile.id);
 
-      bool isFollow = false;
-      if (currentUser != null && currentUser.id != profile.id) {
-        isFollow = await _profileService.isFollowing(currentUser.id, profile.id);
+        bool isFollow = false;
+        if (currentUser != null && currentUser.id != profile.id) {
+          isFollow = await _profileService.isFollowing(currentUser.id, profile.id);
+        }
+
+        if (mounted) {
+          setState(() {
+            _profile = profile;
+            _userPosts = posts;
+            _followersCount = counts['followers'] ?? 0;
+            _followingCount = counts['following'] ?? 0;
+            _isFollowing = isFollow;
+            _isLoading = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _isLoading = false);
       }
-
+    } catch (e) {
+      print('[ProfileScreen] Failed to load profile: $e');
       if (mounted) {
         setState(() {
-          _profile = profile;
-          _userPosts = posts;
-          _followersCount = counts['followers'] ?? 0;
-          _followingCount = counts['following'] ?? 0;
-          _isFollowing = isFollow;
           _isLoading = false;
+          _loadError = 'Something went wrong loading this profile.';
+          _loadErrorDetail = e.toString();
         });
       }
-    } else {
-      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -143,6 +161,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ],
             ),
           ),
+        ),
+      );
+    }
+
+    if (_loadError != null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error_outline_rounded, size: 48, color: AppColors.coral400),
+            const SizedBox(height: 12),
+            Text(_loadError!, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            if (_loadErrorDetail != null) ...[
+              const SizedBox(height: 6),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  _loadErrorDetail!,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: isDark ? AppColors.darkInk400 : AppColors.lightInk400,
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            GlassButton(
+              variant: GlassButtonVariant.secondary,
+              text: 'Retry',
+              height: 38,
+              onPressed: _loadProfileData,
+            ),
+          ],
         ),
       );
     }
