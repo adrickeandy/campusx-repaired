@@ -1,0 +1,156 @@
+name: Build CampusX (Windows + Android)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  # ===========================================================================
+  # One job builds both targets on windows-latest since the Windows desktop
+  # build requires it; Android builds happen fine on the same runner.
+  #
+  # Secrets used (Settings -> Secrets and variables -> Actions):
+  #   SUPABASE_URL, SUPABASE_ANON_KEY, GEMINI_API_KEY, GEMINI_API_KEYS
+  # ===========================================================================
+  build:
+    name: Build Windows + Android
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Write build-time env file
+        shell: pwsh
+        run: |
+          $envJson = @{
+            SUPABASE_URL      = "${{ secrets.SUPABASE_URL }}"
+            SUPABASE_ANON_KEY = "${{ secrets.SUPABASE_ANON_KEY }}"
+            GEMINI_API_KEY    = "${{ secrets.GEMINI_API_KEY }}"
+            GEMINI_API_KEYS   = "${{ secrets.GEMINI_API_KEYS }}"
+            GEMINI_MODEL      = "gemini-3.5-flash-lite"
+          } | ConvertTo-Json
+          Set-Content -Path "env.json" -Value $envJson
+
+      - name: Validate required secrets
+        shell: pwsh
+        run: |
+          # GitHub silently resolves an unknown/mistyped secret name to an
+          # empty string rather than erroring — which then gets baked into
+          # the app as a real (but blank) override of the safe local
+          # default, producing a confusing runtime "No API key found"
+          # error instead of a clear build failure. Fail loudly here instead.
+          $missing = @()
+          if ("${{ secrets.SUPABASE_URL }}" -eq "") { $missing += "SUPABASE_URL" }
+          if ("${{ secrets.SUPABASE_ANON_KEY }}" -eq "") { $missing += "SUPABASE_ANON_KEY" }
+          if ($missing.Count -gt 0) {
+            Write-Error "Missing/empty required secret(s): $($missing -join ', '). Check Settings -> Secrets and variables -> Actions -> exact spelling (case-sensitive)."
+            exit 1
+          }
+          Write-Host "Required secrets present."
+
+      # ---------------------------------------------------------------------
+      # Windows platform scaffold: always regenerated from the actual Flutter
+      # SDK running the build (see README for why this must never be hand-
+      # authored or committed) — then branded.
+      # ---------------------------------------------------------------------
+      - name: Regenerate native Windows platform scaffold
+        shell: pwsh
+        run: |
+          if (Test-Path windows) { Remove-Item -Recurse -Force windows }
+          flutter create --platforms=windows .
+
+      - name: Apply CampusX branding (Windows)
+        shell: pwsh
+        run: |
+          Copy-Item -Path "branding\app_icon.ico" -Destination "windows\runner\resources\app_icon.ico" -Force
+          (Get-Content windows\CMakeLists.txt) -replace 'set\(BINARY_NAME ".*"\)', 'set(BINARY_NAME "CampusX")' | Set-Content windows\CMakeLists.txt
+          (Get-Content windows\runner\main.cpp) -replace 'CreateAndShow\(L".*?",', 'CreateAndShow(L"CampusX",' | Set-Content windows\runner\main.cpp
+          (Get-Content windows\runner\Runner.rc) -replace '"CompanyName", ".*?"', '"CompanyName", "Plateau High Zone"' -replace '"FileDescription", ".*?"', '"FileDescription", "CampusX Desktop"' -replace '"ProductName", ".*?"', '"ProductName", "CampusX"' | Set-Content windows\runner\Runner.rc
+
+      # ---------------------------------------------------------------------
+      # Android platform scaffold: same principle — regenerated fresh every
+      # run rather than hand-maintained or committed, so it always matches
+      # whatever Flutter/Gradle/AGP versions this runner actually has.
+      # ---------------------------------------------------------------------
+      - name: Regenerate native Android platform scaffold
+        shell: pwsh
+        run: |
+          if (Test-Path android) { Remove-Item -Recurse -Force android }
+          flutter create --platforms=android --org com.campusx .
+
+      - name: Apply CampusX branding (Android)
+        shell: pwsh
+        run: |
+          $manifest = "android\app\src\main\AndroidManifest.xml"
+          if (Test-Path $manifest) {
+            (Get-Content $manifest) -replace 'android:label="[^"]*"', 'android:label="CampusX"' | Set-Content $manifest
+          }
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # ---------------------------------------------------------------------
+      # Android build
+      # ---------------------------------------------------------------------
+      - name: Build Android APK (Release)
+        run: flutter build apk --release --dart-define-from-file=env.json
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CampusX-Android-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+      # ---------------------------------------------------------------------
+      # Windows build
+      # ---------------------------------------------------------------------
+      - name: Build Windows Desktop (Release)
+        run: flutter build windows --release --dart-define-from-file=env.json
+
+      - name: Zip raw Windows build
+        shell: pwsh
+        run: |
+          $releaseDir = "build/windows/x64/runner/Release"
+          if (-not (Test-Path $releaseDir)) {
+            $releaseDir = "build/windows/runner/Release"
+          }
+          Compress-Archive -Path "$releaseDir/*" -DestinationPath "campusx-windows-x64.zip"
+
+      - name: Upload raw Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: campusx-windows-x64-raw
+          path: campusx-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build Windows installer (CampusXSetup.exe)
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\campusx.iss"
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: CampusXSetup
+          path: installer/Output/CampusXSetup.exe
+          if-no-files-found: error
